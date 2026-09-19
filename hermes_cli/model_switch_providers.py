@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import http.client
 import os
+import shutil
 import time
 import threading as _threading
 from dataclasses import dataclass, field
@@ -928,6 +929,36 @@ def _lap_canonical_rows(b: _PickerBuild) -> None:
             cp.slug, cp.label, cp.slug == b.current_provider, model_ids, "canonical", uncapped_ok=False)
 
 
+
+def _lap_external_process_rows(b: _PickerBuild) -> None:
+    """Section 2c: discovered local-agent providers with a runnable executable.
+
+    These providers own their authentication and often do not have an HTTP
+    ``/models`` endpoint. Their profile fallback list is consequently the
+    authoritative picker catalog.
+    """
+    from providers import list_providers
+
+    for profile in list_providers():
+        if getattr(profile, "auth_type", "") != "external_process":
+            continue
+        slug = str(getattr(profile, "name", "") or "").strip()
+        if not slug or _skip(b.seen_slugs, b.excluded, slug):
+            continue
+        command_vars = tuple(getattr(profile, "process_command_env_vars", ()) or ())
+        command = next((os.environ.get(name, "").strip() for name in command_vars if os.environ.get(name, "").strip()), "")
+        command = command or str(getattr(profile, "process_command", "") or "")
+        base_url = str(getattr(profile, "base_url", "") or "")
+        if not (shutil.which(command) if command else False) and not base_url.startswith("acp+tcp://"):
+            continue
+        models = list(getattr(profile, "fallback_models", ()) or ())
+        if not models:
+            continue
+        b.add_builtin_row(
+            slug, str(getattr(profile, "display_name", "") or slug),
+            slug.lower() == b.current_provider_norm, models, "external-process")
+
+
 def _lap_user_provider_rows(b: _PickerBuild, user_providers: dict) -> None:
     """Section 3: ``providers:`` dict entries, grouped by (api_url, credential, api_mode,
     extra_headers) so keyed providers on one endpoint with the same wire protocol collapse into
@@ -1205,6 +1236,7 @@ def list_authenticated_providers(
     _lap_builtin_rows(b, data, user_providers)
     _lap_overlay_rows(b, data)
     _lap_canonical_rows(b)
+    _lap_external_process_rows(b)
     if user_providers and isinstance(user_providers, dict):
         _lap_user_provider_rows(b, user_providers)
     _lap_bare_custom_row(b, custom_providers)
